@@ -15,7 +15,7 @@ type Server struct {
 	Daemons map[string]*Daemon
 }
 
-func New() *Server {
+func New(ctx context.Context) *Server {
 	return &Server{
 		Daemons: make(map[string]*Daemon),
 	}
@@ -42,6 +42,10 @@ func (s *Server) Start(sctx context.Context) error {
 				"type": "string",
 			}),
 		),
+		mcp.WithString("workdir",
+			mcp.Required(),
+			mcp.Description("Working directory of the daemon in absolute path"),
+		),
 	)
 	stopTool := mcp.NewTool("daemonize_stop",
 		mcp.WithDescription("Stop a daemon"),
@@ -60,6 +64,7 @@ func (s *Server) Start(sctx context.Context) error {
 			mcp.Description("Name of the daemon"),
 		),
 		mcp.WithNumber("tail",
+			mcp.Required(),
 			mcp.Description("Number of lines to read from the end of the log"),
 		),
 	)
@@ -81,7 +86,11 @@ func (s *Server) Start(sctx context.Context) error {
 				return mcp.NewToolResultError("invalid command parameter"), nil
 			}
 		}
-		daemon := NewDaemon(name, command)
+		workdir, ok := request.Params.Arguments["workdir"].(string)
+		if !ok {
+			return mcp.NewToolResultError("invalid workdir parameter"), nil
+		}
+		daemon := NewDaemon(name, command, workdir)
 		if err := daemon.Start(sctx); err != nil {
 			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("failed to start daemon %s", name), err), nil
 		}
@@ -97,7 +106,11 @@ func (s *Server) Start(sctx context.Context) error {
 		if !ok {
 			return mcp.NewToolResultError(fmt.Sprintf("daemon %s not found", name)), nil
 		}
-		if daemon.Status() != DaemonStatusRunning {
+		status, err := daemon.Status()
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("failed to stop daemon %s", name), err), nil
+		}
+		if status != DaemonStatusRunning {
 			delete(s.Daemons, name)
 			return mcp.NewToolResultText("Daemon already stopped"), nil
 		}
@@ -117,7 +130,11 @@ func (s *Server) Start(sctx context.Context) error {
 		result.WriteString("Running daemons:\n")
 		for _, name := range names {
 			d := s.Daemons[name]
-			fmt.Fprintf(result, "  - %s[%s]: %s\n", name, strings.Join(d.Commands, " "), d.Status())
+			status, err := d.Status()
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr(fmt.Sprintf("failed to get status of daemon %s", name), err), nil
+			}
+			fmt.Fprintf(result, "  - %s[%s]:[%s]: %s\n", name, strings.Join(d.Commands, " "), d.Workdir, status)
 		}
 		return mcp.NewToolResultText(result.String()), nil
 	})
