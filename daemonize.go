@@ -2,7 +2,9 @@ package daemonize
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -15,13 +17,13 @@ type Server struct {
 	Daemons map[string]*Daemon
 }
 
-func New(ctx context.Context) *Server {
+func New() *Server {
 	return &Server{
 		Daemons: make(map[string]*Daemon),
 	}
 }
 
-func (s *Server) Start(sctx context.Context) error {
+func (s *Server) Start() error {
 	ms := server.NewMCPServer(
 		"Daemonize",
 		"1.0.0",
@@ -91,7 +93,7 @@ func (s *Server) Start(sctx context.Context) error {
 			return mcp.NewToolResultError("invalid workdir parameter"), nil
 		}
 		daemon := NewDaemon(name, command, workdir)
-		if err := daemon.Start(sctx); err != nil {
+		if err := daemon.Start(ctx); err != nil {
 			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("failed to start daemon %s", name), err), nil
 		}
 		s.Daemons[name] = daemon
@@ -114,7 +116,7 @@ func (s *Server) Start(sctx context.Context) error {
 			delete(s.Daemons, name)
 			return mcp.NewToolResultText("Daemon already stopped"), nil
 		}
-		if err := daemon.Stop(sctx); err != nil {
+		if err := daemon.Stop(ctx); err != nil {
 			return mcp.NewToolResultErrorFromErr(fmt.Sprintf("failed to stop daemon %s", name), err), nil
 		}
 		delete(s.Daemons, name)
@@ -164,6 +166,9 @@ func (s *Server) Start(sctx context.Context) error {
 		offset = max(0, offset)
 		lines, err := daemon.Logger.ReadLine(offset)
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return mcp.NewToolResultText("No logs available"), nil
+			}
 			return mcp.NewToolResultErrorFromErr("failed to read logs", err), nil
 		}
 		result := &strings.Builder{}
