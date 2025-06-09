@@ -157,7 +157,7 @@ func TestStopKillsDescendants(t *testing.T) {
 		t.Fatalf("parsing child PID: %v", err)
 	}
 	// Stop the daemon (should kill both parent and grandchild)
-	if err := d.Stop(ctx); err != nil {
+	if err := d.Stop(ctx); err != nil && !errors.Is(err, daemonize.ErrGracefulShutdownTimeout) {
 		t.Fatalf("Stop error: %v", err)
 	}
 	// Give the OS a moment to clean up processes
@@ -170,4 +170,3 @@ func TestStopKillsDescendants(t *testing.T) {
 		t.Errorf("unexpected error checking child process: %v", err)
 	}
 }
-

@@ -107,6 +107,8 @@ func (d *Daemon) pgid() (int, error) {
 	return syscall.Getpgid(d.cmd.Process.Pid)
 }
 
+var ErrGracefulShutdownTimeout = errors.New("graceful shutdown timed out")
+
 func (d *Daemon) Stop(ctx context.Context) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -140,7 +142,7 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	case <-time.After(10 * time.Second):
 		_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		<-d.done
-		return errors.New("graceful shutdown timed out")
+		return ErrGracefulShutdownTimeout
 	}
 }
 
