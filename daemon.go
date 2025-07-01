@@ -56,6 +56,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
+			slog.InfoContext(ctx, "context cancelled, stopping daemon", slog.String("name", d.Name))
 			if status, err := d.Status(); err != nil {
 				slog.ErrorContext(ctx, "failed to get daemon status", slog.String("name", d.Name), slog.Any("error", err))
 			} else if status != DaemonStatusRunning {

@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
+	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -24,6 +28,11 @@ func New() *Server {
 }
 
 func (s *Server) Start() error {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+	signal.Ignore(syscall.SIGPIPE)
+
 	ms := server.NewMCPServer(
 		"Daemonize",
 		"1.0.0",
@@ -72,25 +81,17 @@ func (s *Server) Start() error {
 	)
 
 	ms.AddTool(startTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		name, ok := request.Params.Arguments["name"].(string)
-		if !ok {
-			return mcp.NewToolResultError("invalid name parameter"), nil
+		name, err := request.RequireString("name")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("invalid name parameter", err), nil
 		}
-		_command, ok := request.Params.Arguments["command"].([]any)
-		if !ok {
-			return mcp.NewToolResultError("invalid command parameter"), nil
+		command, err := request.RequireStringSlice("command")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("invalid command parameter", err), nil
 		}
-		command := make([]string, len(_command))
-		for i, v := range _command {
-			if str, ok := v.(string); ok {
-				command[i] = str
-			} else {
-				return mcp.NewToolResultError("invalid command parameter"), nil
-			}
-		}
-		workdir, ok := request.Params.Arguments["workdir"].(string)
-		if !ok {
-			return mcp.NewToolResultError("invalid workdir parameter"), nil
+		workdir, err := request.RequireString("workdir")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("invalid workdir parameter", err), nil
 		}
 		daemon := NewDaemon(name, command, workdir)
 		if err := daemon.Start(ctx); err != nil {
@@ -100,9 +101,9 @@ func (s *Server) Start() error {
 		return mcp.NewToolResultText("Daemon started successfully"), nil
 	})
 	ms.AddTool(stopTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		name, ok := request.Params.Arguments["name"].(string)
-		if !ok {
-			return mcp.NewToolResultError("invalid name parameter"), nil
+		name, err := request.RequireString("name")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("invalid name parameter", err), nil
 		}
 		daemon, ok := s.Daemons[name]
 		if !ok {
@@ -141,28 +142,29 @@ func (s *Server) Start() error {
 		return mcp.NewToolResultText(result.String()), nil
 	})
 	ms.AddTool(logsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		name, ok := request.Params.Arguments["name"].(string)
-		if !ok {
-			return mcp.NewToolResultError("invalid name parameter"), nil
+		name, err := request.RequireString("name")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("invalid name parameter", err), nil
 		}
 		daemon, ok := s.Daemons[name]
 		if !ok {
 			return mcp.NewToolResultError(fmt.Sprintf("daemon %s not found", name)), nil
 		}
-		tail, ok := request.Params.Arguments["tail"].(float64)
-		if !ok {
-			return mcp.NewToolResultError("invalid tail parameter"), nil
+		_tail, err := request.RequireInt("tail")
+		if err != nil {
+			return mcp.NewToolResultErrorFromErr("invalid tail parameter", err), nil
 		}
+		tail := int64(_tail)
 		if tail < 0 {
 			return mcp.NewToolResultError("tail parameter must be non-negative"), nil
 		}
 		if tail == 0 {
 			return mcp.NewToolResultText("No logs available"), nil
 		}
-		if tail > float64(daemon.Logger.Lines()) {
-			tail = float64(daemon.Logger.Lines())
+		if tail > daemon.Logger.Lines() {
+			tail = daemon.Logger.Lines()
 		}
-		offset := daemon.Logger.Lines() - int64(tail)
+		offset := daemon.Logger.Lines() - tail
 		offset = max(0, offset)
 		lines, err := daemon.Logger.ReadLine(offset)
 		if err != nil {
@@ -180,7 +182,23 @@ func (s *Server) Start() error {
 	})
 
 	if err := server.ServeStdio(ms); err != nil {
-		fmt.Printf("Server error: %v\n", err)
+		slog.Error("Server error", slog.Any("error", err))
 	}
+	slog.Info("Server stop successfully")
+	for name, daemon := range s.Daemons {
+		if status, err := daemon.Status(); err != nil {
+			slog.Error("Failed to get daemon status", slog.String("name", name), slog.Any("error", err))
+			continue
+		} else if status != DaemonStatusRunning {
+			slog.Debug("Daemon already stopped", slog.String("name", name), slog.String("status", string(status)))
+			delete(s.Daemons, name)
+			continue
+		}
+		if err := daemon.Stop(context.Background()); err != nil {
+			slog.Error("Failed to stop daemon", slog.String("name", name), slog.Any("error", err))
+			continue
+		}
+	}
+
 	return nil
 }
